@@ -1,111 +1,63 @@
 #!/usr/bin/env python3
 from OpenSSL import crypto
-import argparse
-import os,sys
+import sys
+from config import org_fields
 
-# Command line arguments
-parser = argparse.ArgumentParser(description='''
-Script for SSL Certificate CSR and key generating
 
-The most of parameteres, that usually used as fields in CSR, are already given with default values. If you want to change them, you can use optional arguments, that are given below
-''')
-parser.add_argument('--cn',
-                    '-c',
-                    type=str,
-                    required=True, 
-                    help='The fully-qualified domain name (FQDN) (e.g., www.example.com).')
+with open ('ca.crt', 'r') as file:
+    cacert = crypto.load_certificate(crypto.FILETYPE_PEM, file.read())
 
-parser.add_argument('--email',
-                    '-e',
-                    type=str,
-                    nargs='?',
-                    help='E-mail address', 
-                    default='support@itsyndicate.org')
+with open ('ca.key', 'r') as file:
+    cakey = crypto.load_privatekey(crypto.FILETYPE_PEM, file.read())
 
-parser.add_argument('--country',
-                    '-C',
-                    type=str,
-                    nargs='?',
-                    help='The two-letter country code where your company is legally located.', 
-                    default='US')
+of = org_fields()
 
-parser.add_argument('--state',
-                    '-s',
-                    type=str,
-                    nargs='?',
-                    help='The state/province where your company is legally located.', 
-                    default='Texas')
+def make_key():
+    pkey = crypto.PKey()
+    pkey.generate_key(crypto.TYPE_RSA, 2048)
+    return pkey
 
-parser.add_argument('--location',
-                    '-l',
-                    type=str,
-                    nargs='?',
-                    help='The city where your company is legally located.', 
-                    default='Houston')
-parser.add_argument('--organization',
-                    '-o',
-                    type=str,
-                    nargs='?',
-                    help='The name of your department within the organization', 
-                    default='Some department')
 
-args = parser.parse_args()
+def make_csr(pkey, cn, email=of.email, C=of.C, ST=of.ST, L=of.L, OU=of.OU, hashalgorithm='sha256WithRSAEncryption'):
+    req = crypto.X509Req()
+    req.get_subject().CN = cn
+    req.get_subject().C = C
+    req.get_subject().ST = ST
+    req.get_subject().L = L
+    req.get_subject().OU = OU
+    req.get_subject().emailAddress = email
+    req.set_pubkey(pkey)
+    req.sign(pkey, hashalgorithm)
+    return req
 
-cn = args.cn
-email = args.email
-C = args.country
-ST = args.state
-L = args.location
-OU = args.organization
 
-# Checking if directory ~/SSL exists, if not , then create it.
-ssl_dir = os.getenv('HOME') + '/SSL'
-if not os.path.exists(ssl_dir):
-    os.makedirs(ssl_dir)
+def create_new_certificate(csr, cakey, cacert, serial):
+    cert = crypto.X509()
+    cert.set_serial_number(serial)
+    cert.gmtime_adj_notBefore(0)
+    cert.gmtime_adj_notAfter(60*60*24*365*10)
+    cert.set_issuer(cacert.get_subject())
+    cert.set_subject(csr.get_subject())
+    cert.set_pubkey(csr.get_pubkey())
+    cert.set_version(2)
 
-# function that creates and prints to stdout CSR and key files
-def gencsrfiles(cn, email, C, ST, L, OU):
-    # Create all needed directory
-    result_dir = ssl_dir + '/' + cn
-    if not os.path.exists(ssl_dir + '/' +cn):
-        os.makedirs(ssl_dir + '/' +cn)
-    csr_file = result_dir + '/' + cn + '.csr'
-    key_file = result_dir + '/' + cn + '.key'
+    extensions = []
+    extensions.append(crypto.X509Extension(b'basicConstraints', False ,b'CA:FALSE'))
 
-    # Generate key and csr
-    key = crypto.PKey()
-    key.generate_key(crypto.TYPE_RSA, 2048)
-    # print(key())
-    csr = crypto.X509Req()
-    csr.get_subject().CN = cn
-    csr.get_subject().C = C
-    csr.get_subject().ST = ST
-    csr.get_subject().L = L
-    csr.get_subject().OU = OU
-    csr.get_subject().emailAddress = email
-    csr.set_pubkey(key)
-    csr.sign(key, 'sha1')
+    extensions.append(crypto.X509Extension(b'subjectKeyIdentifier', False, b'hash', subject=cert))
+    extensions.append(crypto.X509Extension(b'authorityKeyIdentifier', False, b'keyid:always,issuer:always', subject=cacert, issuer=cacert))
 
-    # Save results to files and print them to stdout
-    with open(csr_file, 'wb') as csr_f:
-        csr_f.write(crypto.dump_certificate_request(crypto.FILETYPE_PEM, csr))
-    with open(key_file, 'wb') as key_f:
-        key_f.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, key))
-    print("  \n")    
-    print("          ██████╗███████╗██████╗  ")
-    print("         ██╔════╝██╔════╝██╔══██╗ ")
-    print("         ██║     ███████╗██████╔╝ ")
-    print("         ██║     ╚════██║██╔══██╗ ")
-    print("         ╚██████╗███████║██║  ██║ ")
-    print("          ╚═════╝╚══════╝╚═╝  ╚═╝ \n")        
-    sys.stdout.buffer.write(crypto.dump_certificate_request(crypto.FILETYPE_PEM, csr))
-    print(" \n")
-    print("         ██╗  ██╗███████╗██╗   ██╗")
-    print("         ██║ ██╔╝██╔════╝╚██╗ ██╔╝")
-    print("         █████╔╝ █████╗   ╚████╔╝ ")
-    print("         ██╔═██╗ ██╔══╝    ╚██╔╝  ")
-    print("         ██║  ██╗███████╗   ██║   ")
-    print("         ╚═╝  ╚═╝╚══════╝   ╚═╝   \n")    
+    cert.add_extensions(extensions)
+    cert.sign(cakey, 'sha256WithRSAEncryption')
+
+    return cert
+
+def main(cacert, cakey, username, serial):
+    key = make_key()
+    csr = make_csr(key, username)
+    crt = create_new_certificate(csr, cakey, cacert, serial)
     sys.stdout.buffer.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, key))
+    sys.stdout.buffer.write(crypto.dump_certificate_request(crypto.FILETYPE_PEM, csr))
+    sys.stdout.buffer.write(crypto.dump_certificate(crypto.FILETYPE_PEM, crt))
 
-gencsrfiles(cn, email, C, ST, L, OU)
+main(cacert, cakey, 'shaman', 0x0C)
